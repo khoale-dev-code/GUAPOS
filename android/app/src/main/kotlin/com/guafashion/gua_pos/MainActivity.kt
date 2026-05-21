@@ -1,0 +1,5 @@
+package com.guafashion.gua_pos
+
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity()
