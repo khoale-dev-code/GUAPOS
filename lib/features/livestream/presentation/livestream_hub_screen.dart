@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'create_order_sheet.dart';
 import 'lucky_wheel_screen.dart';
-import 'live_comments_screen.dart'; // Đảm bảo đã import file này
+import 'live_comments_screen.dart';
+import 'session_history_screen.dart';
 import '../../../../shared/models/livestream_models.dart';
 
 class LivestreamHubScreen extends StatefulWidget {
@@ -18,10 +19,8 @@ class _LivestreamHubScreenState extends State<LivestreamHubScreen> {
 
   int _selectedPlatformTab = 0;
   bool _loadingActive = true;
-  bool _loadingHistory = true;
 
   Map<String, dynamic>? _activeSession;
-  List<Map<String, dynamic>> _historySessions = [];
   final List<LiveComment> _realtimeComments = [];
 
   RealtimeChannel? _commentSubscription;
@@ -38,14 +37,13 @@ class _LivestreamHubScreenState extends State<LivestreamHubScreen> {
     super.dispose();
   }
 
-  String get _currentPlatformStr =>
+  String get _currentPlatform =>
       _selectedPlatformTab == 0 ? 'tiktok' : 'facebook';
 
   void _loadPlatformData() {
     _cancelCommentSubscription();
-    _realtimeComments.clear();
+    setState(() => _realtimeComments.clear());
     _fetchActiveSession();
-    _fetchHistorySessions();
   }
 
   void _cancelCommentSubscription() {
@@ -61,231 +59,127 @@ class _LivestreamHubScreenState extends State<LivestreamHubScreen> {
       final res = await _db
           .from('livestream_sessions')
           .select('id, title, platform, status, stream_url, created_at')
-          .eq('platform', _currentPlatformStr)
+          .eq('platform', _currentPlatform)
           .eq('status', 'live')
           .order('created_at', ascending: false)
           .limit(1);
 
       if ((res as List).isNotEmpty) {
-        setState(() {
-          _activeSession = res[0];
-        });
+        setState(() => _activeSession = res[0]);
         _listenToRealtimeComments(res[0]['id'] as String);
       } else {
         setState(() => _activeSession = null);
       }
     } catch (_) {}
-    setState(() => _loadingActive = false);
-  }
-
-  Future<void> _fetchHistorySessions() async {
-    setState(() => _loadingHistory = true);
-    try {
-      final res = await _db
-          .from('livestream_sessions')
-          .select('id, title, platform, status, created_at, ended_at')
-          .eq('platform', _currentPlatformStr)
-          .eq('status', 'ended')
-          .order('created_at', ascending: false);
-
-      setState(() {
-        _historySessions = List<Map<String, dynamic>>.from(res);
-      });
-    } catch (_) {}
-    setState(() => _loadingHistory = false);
+    if (mounted) setState(() => _loadingActive = false);
   }
 
   void _listenToRealtimeComments(String sessionId) {
-    _commentSubscription =
-        _db.channel('public:livestream_comments').onPostgresChanges(
-              event: PostgresChangeEvent.insert,
-              schema: 'public',
-              table: 'livestream_comments',
-              filter: PostgresChangeFilter(
-                type: PostgresChangeFilterType.eq,
-                column: 'session_id',
-                value: sessionId,
-              ),
-              callback: (payload) {
-                final newRecord = payload.newRecord;
-                final comment = LiveComment(
-                  id: newRecord['id']?.toString() ?? '',
-                  sessionId: sessionId,
-                  commenterName:
-                      newRecord['commenter_name'] as String? ?? 'Khách ẩn danh',
-                  commentText: newRecord['comment_text'] as String? ?? '',
-                  createdAt: DateTime.parse(newRecord['created_at'] as String),
-                );
-
-                if (mounted) {
-                  setState(() {
-                    _realtimeComments.insert(0, comment);
-                  });
-                }
-              },
-            )..subscribe();
+    _commentSubscription = _db
+        .channel('public:livestream_comments:$sessionId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'livestream_comments',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'session_id',
+            value: sessionId,
+          ),
+          callback: (payload) {
+            final r = payload.newRecord;
+            final comment = LiveComment(
+              id: r['id']?.toString() ?? '',
+              sessionId: sessionId,
+              commenterName: r['commenter_name'] as String? ?? 'Khách ẩn danh',
+              commentText: r['comment_text'] as String? ?? '',
+              createdAt: DateTime.parse(r['created_at'] as String),
+            );
+            if (mounted) setState(() => _realtimeComments.insert(0, comment));
+          },
+        )..subscribe();
   }
 
-  LiveSession _buildLiveSessionModel(Map<String, dynamic> sessionData) {
-    return LiveSession(
-      id: sessionData['id'] as String,
-      title: sessionData['title'] as String? ?? 'Phiên Live',
-      platform: sessionData['platform'] as String? ?? 'tiktok',
-      status: sessionData['status'] as String? ?? 'live',
-      createdAt: sessionData['created_at'] != null
-          ? DateTime.parse(sessionData['created_at'] as String)
-          : DateTime.now(),
-    );
-  }
+  LiveSession _toModel(Map<String, dynamic> d) => LiveSession(
+        id: d['id'] as String,
+        title: d['title'] as String? ?? 'Phiên Live',
+        platform: d['platform'] as String? ?? 'tiktok',
+        status: d['status'] as String? ?? 'live',
+        createdAt: d['created_at'] != null
+            ? DateTime.parse(d['created_at'] as String)
+            : DateTime.now(),
+      );
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF2F2F7),
       appBar: AppBar(
-        title: const Text('Trung tâm Livestream',
-            style: TextStyle(fontWeight: FontWeight.w700)),
-        centerTitle: false,
         backgroundColor: Colors.white,
         elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        title: const Text(
+          'Trung tâm livestream',
+          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        ),
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48),
+          preferredSize: const Size.fromHeight(52),
           child: Container(
             color: Colors.white,
-            padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
-            child: Row(
-              children: [
-                _PlatformTabButton(
-                  label: '🎵 TikTok Live',
-                  active: _selectedPlatformTab == 0,
-                  onTap: () {
-                    if (_selectedPlatformTab == 0) return;
-                    setState(() => _selectedPlatformTab = 0);
-                    _loadPlatformData();
-                  },
-                ),
-                const SizedBox(width: 12),
-                _PlatformTabButton(
-                  label: '📘 Facebook Live',
-                  active: _selectedPlatformTab == 1,
-                  onTap: () {
-                    if (_selectedPlatformTab == 1) return;
-                    setState(() => _selectedPlatformTab = 1);
-                    _loadPlatformData();
-                  },
-                ),
-              ],
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: _PlatformTabBar(
+              selected: _selectedPlatformTab,
+              onChanged: (i) {
+                if (i == _selectedPlatformTab) return;
+                setState(() => _selectedPlatformTab = i);
+                _loadPlatformData();
+              },
             ),
           ),
         ),
       ),
-      body: RefreshIndicator(
+      body: RefreshIndicator.adaptive(
         onRefresh: () async => _loadPlatformData(),
         child: ListView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(14),
           children: [
-            const _SectionLabel(label: 'Phiên livestream hiện tại'),
+            _SectionLabel(label: 'Phiên đang live'),
+            const SizedBox(height: 6),
             _loadingActive
-                ? const _Card(
-                    child: Padding(
-                        padding: EdgeInsets.all(24),
-                        child: Center(child: CupertinoActivityIndicator())))
+                ? const _LoadingCard()
                 : _activeSession == null
-                    ? _NoActiveLiveCard(platform: _currentPlatformStr)
+                    ? _NoLiveCard(platform: _currentPlatform)
                     : _ActiveLiveCard(
                         session: _activeSession!,
                         comments: _realtimeComments,
-                        onLuckyWheelTap: () {
-                          Navigator.push(
-                            context,
-                            CupertinoPageRoute(
-                              builder: (_) => LuckyWheelScreen(
-                                session:
-                                    _buildLiveSessionModel(_activeSession!),
-                              ),
+                        onWheelTap: () => Navigator.push(
+                          context,
+                          CupertinoPageRoute(
+                            builder: (_) => LuckyWheelScreen(
+                              session: _toModel(_activeSession!),
                             ),
-                          );
-                        },
-                        onCommentTap: (comment) {
-                          showModalBottomSheet(
-                            context: context,
-                            isScrollControlled: true,
-                            backgroundColor: Colors.transparent,
-                            builder: (_) => CreateOrderSheet(
-                              comment: comment,
-                              session: _buildLiveSessionModel(_activeSession!),
-                            ),
-                          );
-                        },
-                      ),
-            const SizedBox(height: 20),
-            const _SectionLabel(label: 'Lịch sử phiên live trước đó'),
-            _loadingHistory
-                ? const Center(
-                    child: Padding(
-                        padding: EdgeInsets.all(16),
-                        child: CupertinoActivityIndicator()))
-                : _historySessions.isEmpty
-                    ? Center(
-                        child: Text('Chưa có lịch sử live trên nền tảng này',
-                            style: TextStyle(
-                                fontSize: 13, color: Colors.grey.shade500)))
-                    : Container(
-                        decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(14)),
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: _historySessions.length,
-                          separatorBuilder: (_, __) => const Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 16),
-                              child:
-                                  Divider(height: 1, color: Color(0xFFE5E5EA))),
-                          itemBuilder: (ctx, i) {
-                            final item = _historySessions[i];
-                            final title =
-                                item['title'] as String? ?? 'Phiên Live cũ';
-                            final createdAt =
-                                DateTime.parse(item['created_at'] as String)
-                                    .toLocal();
-
-                            return ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 4),
-                              leading: Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                    color: Colors.grey.shade100,
-                                    shape: BoxShape.circle),
-                                child: Icon(CupertinoIcons.time,
-                                    size: 18, color: Colors.grey.shade600),
-                              ),
-                              title: Text(title,
-                                  style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600)),
-                              subtitle: Text(
-                                'Ngày live: ${createdAt.day}/${createdAt.month}/${createdAt.year} lúc ${createdAt.hour}:${createdAt.minute.toString().padLeft(2, '0')}',
-                                style: const TextStyle(fontSize: 11),
-                              ),
-                              trailing: const Icon(CupertinoIcons.chevron_right,
-                                  size: 14, color: Colors.grey),
-                              onTap: () {
-                                // 🚀 LOGIC ĐỒNG BỘ XEM LẠI LỊCH SỬ COMMENT ĐỂ CHỐT BÙ/SỬA ĐƠN
-                                Navigator.push(
-                                  context,
-                                  CupertinoPageRoute(
-                                    builder: (_) => LiveCommentsScreen(
-                                      session: _buildLiveSessionModel(item),
-                                    ),
-                                  ),
-                                ).then((_) => _fetchHistorySessions());
-                              },
-                            );
-                          },
+                          ),
+                        ),
+                        onCommentTap: (comment) => showModalBottomSheet(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: Colors.transparent,
+                          builder: (_) => CreateOrderSheet(
+                            comment: comment,
+                            session: _toModel(_activeSession!),
+                          ),
                         ),
                       ),
+            const SizedBox(height: 20),
+            _HistoryEntryButton(
+              onTap: () => Navigator.push(
+                context,
+                CupertinoPageRoute(
+                  builder: (_) => const SessionHistoryScreen(),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
           ],
         ),
       ),
@@ -293,14 +187,54 @@ class _LivestreamHubScreenState extends State<LivestreamHubScreen> {
   }
 }
 
-// Giữ các Widget thành phần phụ (_PlatformTabButton, _ActiveLiveCard, _NoActiveLiveCard, _Card, _SectionLabel) giống như phiên bản hiện tại của bạn...
-class _PlatformTabButton extends StatelessWidget {
+// ─────────────────────────────────────────────────────────────
+// PLATFORM TAB BAR
+// ─────────────────────────────────────────────────────────────
+
+class _PlatformTabBar extends StatelessWidget {
+  final int selected;
+  final ValueChanged<int> onChanged;
+
+  const _PlatformTabBar({required this.selected, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _Tab(
+          label: 'TikTok Live',
+          icon: CupertinoIcons.play_circle,
+          active: selected == 0,
+          onTap: () => onChanged(0),
+          activeColor: const Color(0xFF1C1C1E),
+        ),
+        const SizedBox(width: 10),
+        _Tab(
+          label: 'Facebook Live',
+          icon: CupertinoIcons.video_camera,
+          active: selected == 1,
+          onTap: () => onChanged(1),
+          activeColor: const Color(0xFF1877F2),
+        ),
+      ],
+    );
+  }
+}
+
+class _Tab extends StatelessWidget {
   final String label;
+  final IconData icon;
   final bool active;
   final VoidCallback onTap;
+  final Color activeColor;
 
-  const _PlatformTabButton(
-      {required this.label, required this.active, required this.onTap});
+  const _Tab({
+    required this.label,
+    required this.icon,
+    required this.active,
+    required this.onTap,
+    required this.activeColor,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -308,20 +242,32 @@ class _PlatformTabButton extends StatelessWidget {
       child: GestureDetector(
         onTap: onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          duration: const Duration(milliseconds: 160),
+          padding: const EdgeInsets.symmetric(vertical: 9),
           decoration: BoxDecoration(
-            color: active ? const Color(0xFF007AFF) : const Color(0xFFE5E5EA),
+            color: active ? activeColor : const Color(0xFFF2F2F7),
             borderRadius: BorderRadius.circular(10),
-          ),
-          child: Center(
-            child: Text(
-              label,
-              style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  color: active ? Colors.white : Colors.black87),
+            border: Border.all(
+              color: active ? activeColor : const Color(0xFFE5E5EA),
+              width: 0.5,
             ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon,
+                  size: 14,
+                  color: active ? Colors.white : Colors.grey.shade500),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: active ? Colors.white : Colors.grey.shade600,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -329,152 +275,362 @@ class _PlatformTabButton extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// ACTIVE LIVE CARD
+// ─────────────────────────────────────────────────────────────
+
 class _ActiveLiveCard extends StatelessWidget {
   final Map<String, dynamic> session;
   final List<LiveComment> comments;
-  final VoidCallback onLuckyWheelTap;
-  final Function(LiveComment) onCommentTap;
+  final VoidCallback onWheelTap;
+  final void Function(LiveComment) onCommentTap;
 
   const _ActiveLiveCard({
     required this.session,
     required this.comments,
-    required this.onLuckyWheelTap,
+    required this.onWheelTap,
     required this.onCommentTap,
   });
 
+  static const List<Color> _avatarColors = [
+    Color(0xFFE6F1FB),
+    Color(0xFFEAF3DE),
+    Color(0xFFEEEDFE),
+    Color(0xFFFAEEDA),
+  ];
+  static const List<Color> _avatarTextColors = [
+    Color(0xFF0C447C),
+    Color(0xFF27500A),
+    Color(0xFF3C3489),
+    Color(0xFF633806),
+  ];
+
+  String _initials(String name) {
+    final parts = name.trim().split(' ');
+    if (parts.length >= 2) {
+      return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
+    }
+    return name.isNotEmpty ? name[0].toUpperCase() : '?';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final hasPhone = comments
+        .where((c) => RegExp(r'0[35789]\d{8}').hasMatch(c.commentText))
+        .length;
+
     return Container(
       decoration: BoxDecoration(
-          color: Colors.white, borderRadius: BorderRadius.circular(16)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE5E5EA), width: 0.5),
+      ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Header
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
             child: Row(
               children: [
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                      color: const Color(0xFFFF3B30),
-                      borderRadius: BorderRadius.circular(6)),
-                  child: const Row(
-                    children: [
-                      Icon(CupertinoIcons.radiowaves_right,
-                          color: Colors.white, size: 12),
-                      SizedBox(width: 4),
-                      Text('DANG LIVE',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800)),
-                    ],
-                  ),
-                ),
+                _LiveBadge(),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    session['title'] as String? ?? 'Phiên kết nối tự động',
+                    session['title'] as String? ?? 'Phiên Live',
                     style: const TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w700),
+                        fontSize: 14, fontWeight: FontWeight.w600),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                // Wheel button
                 GestureDetector(
-                  onTap: onLuckyWheelTap,
+                  onTap: onWheelTap,
                   child: Container(
-                    padding: const EdgeInsets.all(8),
+                    width: 36,
+                    height: 36,
                     decoration: BoxDecoration(
-                        color: const Color(0xFFFF9F0A).withValues(alpha: 0.15),
-                        shape: BoxShape.circle),
-                    child: const Icon(CupertinoIcons.gift_fill,
-                        color: Color(0xFFFF9F0A), size: 22),
+                      color: const Color(0xFFFAEEDA),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: const Color(0xFFF0CF9A), width: 0.5),
+                    ),
+                    child: const Icon(CupertinoIcons.gift,
+                        size: 18, color: Color(0xFF854F0B)),
                   ),
                 ),
               ],
             ),
           ),
-          const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              child: Divider(height: 1, color: Color(0xFFE5E5EA))),
+
+          // Divider
+          const Divider(height: 1, color: Color(0xFFF0F0F0)),
+
+          // Comment list
           Container(
-            height: 260,
-            color: const Color(0xFFF2F2F7).withValues(alpha: 0.4),
+            height: 236,
+            color: const Color(0xFFF9F9FB),
             child: comments.isEmpty
                 ? Center(
-                    child: Text('Đang đợi luồng bình luận đổ về...',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade500,
-                            fontStyle: FontStyle.italic)))
-                : ListView.builder(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(CupertinoIcons.chat_bubble_2,
+                            size: 32, color: Colors.grey.shade300),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Đang đợi bình luận từ live...',
+                          style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade400,
+                              fontStyle: FontStyle.italic),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(10),
                     itemCount: comments.length,
-                    padding: const EdgeInsets.all(12),
+                    separatorBuilder: (_, __) => const SizedBox(height: 7),
                     itemBuilder: (ctx, i) {
-                      final cm = comments[i];
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        decoration: BoxDecoration(
+                      final c = comments[i];
+                      final colorIdx = i % _avatarColors.length;
+                      return GestureDetector(
+                        onTap: () => onCommentTap(c),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 9),
+                          decoration: BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.circular(10)),
-                        child: ListTile(
-                          dense: true,
-                          title: Text(cm.commenterName,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                  color: Color(0xFF007AFF),
-                                  fontSize: 13)),
-                          subtitle: Text(cm.commentText,
-                              style: const TextStyle(
-                                  color: Color(0xFF1C1C1E), fontSize: 13)),
-                          trailing: const Text('Chốt cây 📝',
-                              style: TextStyle(
-                                  color: Color(0xFF34C759),
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 11)),
-                          onTap: () => onCommentTap(cm),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: const Color(0xFFE5E5EA), width: 0.5),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 28,
+                                height: 28,
+                                decoration: BoxDecoration(
+                                  color: _avatarColors[colorIdx],
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Center(
+                                  child: Text(
+                                    _initials(c.commenterName),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: _avatarTextColors[colorIdx],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 9),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      c.commenterName,
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF185FA5),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 1),
+                                    Text(
+                                      c.commentText,
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          color: Color(0xFF1C1C1E)),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEAF3DE),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  'Chốt',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF27500A),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       );
                     },
                   ),
           ),
+
+          // Footer
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: const BoxDecoration(
+              border:
+                  Border(top: BorderSide(color: Color(0xFFF0F0F0), width: 0.5)),
+            ),
+            child: Row(
+              children: [
+                Text(
+                  '${comments.length} bình luận trong phiên',
+                  style:
+                      const TextStyle(fontSize: 11, color: Color(0xFF8E8E93)),
+                ),
+                const Spacer(),
+                Row(
+                  children: [
+                    const Icon(CupertinoIcons.phone,
+                        size: 12, color: Color(0xFF185FA5)),
+                    const SizedBox(width: 4),
+                    Text(
+                      '$hasPhone có SĐT',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF185FA5),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _NoActiveLiveCard extends StatelessWidget {
-  final String platform;
-  const _NoActiveLiveCard({required this.platform});
+// ─────────────────────────────────────────────────────────────
+// HISTORY ENTRY BUTTON
+// ─────────────────────────────────────────────────────────────
+
+class _HistoryEntryButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _HistoryEntryButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE5E5EA), width: 0.5),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF2F2F7),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE5E5EA), width: 0.5),
+              ),
+              child: const Icon(CupertinoIcons.time,
+                  size: 20, color: Color(0xFF3C3C43)),
+            ),
+            const SizedBox(width: 14),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Lịch sử phiên live',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  SizedBox(height: 2),
+                  Text(
+                    'Xem lại & chỉnh đơn hàng từ các phiên cũ',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF8E8E93)),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(CupertinoIcons.chevron_right,
+                size: 16, color: Color(0xFFC7C7CC)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// SMALL COMPONENTS
+// ─────────────────────────────────────────────────────────────
+
+class _LiveBadge extends StatefulWidget {
+  @override
+  State<_LiveBadge> createState() => _LiveBadgeState();
+}
+
+class _LiveBadgeState extends State<_LiveBadge>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _anim;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
+    _anim = Tween(begin: 1.0, end: 0.3).animate(_ctrl);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-          color: Colors.white, borderRadius: BorderRadius.circular(16)),
-      child: Column(
+        color: const Color(0xFFFF3B30),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(CupertinoIcons.arrow_clockwise,
-              size: 36, color: Colors.grey.shade400),
-          const SizedBox(height: 12),
-          Text(
-            'Nhà vườn chưa lên sóng Live trên ${platform.toUpperCase()}',
-            style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: Colors.grey.shade600),
+          FadeTransition(
+            opacity: _anim,
+            child: Container(
+              width: 6,
+              height: 6,
+              decoration: const BoxDecoration(
+                  color: Colors.white, shape: BoxShape.circle),
+            ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            'Hệ thống tự quét luồng 24/7. Khi bạn bật Live ở điện thoại, mục này sẽ tự động sáng lên.',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+          const SizedBox(width: 5),
+          const Text(
+            'LIVE',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.5,
+            ),
           ),
         ],
       ),
@@ -482,26 +638,73 @@ class _NoActiveLiveCard extends StatelessWidget {
   }
 }
 
-class _Card extends StatelessWidget {
-  final Widget child;
-  const _Card({required this.child});
+class _NoLiveCard extends StatelessWidget {
+  final String platform;
+  const _NoLiveCard({required this.platform});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE5E5EA), width: 0.5),
+      ),
+      child: Column(
+        children: [
+          Icon(CupertinoIcons.video_camera_solid,
+              size: 38, color: Colors.grey.shade300),
+          const SizedBox(height: 12),
+          Text(
+            'Chưa có live trên ${platform == 'tiktok' ? 'TikTok' : 'Facebook'}',
+            style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF3C3C43)),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Khi bạn bật live, màn hình này sẽ tự động cập nhật.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: Color(0xFF8E8E93)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LoadingCard extends StatelessWidget {
+  const _LoadingCard();
+
   @override
   Widget build(BuildContext context) => Container(
-      decoration: BoxDecoration(
-          color: Colors.white, borderRadius: BorderRadius.circular(14)),
-      child: child);
+        height: 120,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE5E5EA), width: 0.5),
+        ),
+        child: const Center(child: CupertinoActivityIndicator()),
+      );
 }
 
 class _SectionLabel extends StatelessWidget {
   final String label;
   const _SectionLabel({required this.label});
+
   @override
   Widget build(BuildContext context) => Padding(
-      padding: const EdgeInsets.only(left: 4, bottom: 6, top: 8),
-      child: Text(label.toUpperCase(),
-          style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey.shade500,
-              letterSpacing: 0.5)));
+        padding: const EdgeInsets.only(left: 2, bottom: 0),
+        child: Text(
+          label.toUpperCase(),
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF8E8E93),
+            letterSpacing: 0.5,
+          ),
+        ),
+      );
 }
